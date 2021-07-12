@@ -26,7 +26,7 @@ impl Debug for SqlServerAuth {
 }
 
 #[derive(Clone, PartialEq)]
-#[cfg(any(windows, doc))]
+#[cfg(any(all(windows, feature = "winauth"), doc))]
 #[cfg_attr(feature = "docs", doc(windows))]
 pub struct WindowsAuth {
     pub(crate) user: String,
@@ -34,7 +34,7 @@ pub struct WindowsAuth {
     pub(crate) domain: Option<String>,
 }
 
-#[cfg(any(windows, doc))]
+#[cfg(any(all(windows, feature = "winauth"), doc))]
 #[cfg_attr(feature = "docs", doc(windows))]
 impl Debug for WindowsAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -52,15 +52,22 @@ pub enum AuthMethod {
     /// Authenticate directly with SQL Server.
     SqlServer(SqlServerAuth),
     /// Authenticate with Windows credentials.
-    #[cfg(any(windows, doc))]
-    #[cfg_attr(feature = "docs", doc(cfg(windows)))]
+    #[cfg(any(all(windows, feature = "winauth"), doc))]
+    #[cfg_attr(feature = "docs", doc(cfg(all(windows, feature = "winauth"))))]
     Windows(WindowsAuth),
     /// Authenticate as the currently logged in user. On Windows uses SSPI and
     /// Kerberos on Unix platforms.
-    #[cfg(any(windows, all(unix, feature = "integrated-auth-gssapi"), doc))]
+    #[cfg(any(
+        all(windows, feature = "winauth"),
+        all(unix, feature = "integrated-auth-gssapi"),
+        doc
+    ))]
     #[cfg_attr(
         feature = "docs",
-        doc(cfg(any(windows, all(unix, feature = "integrated-auth-gssapi"))))
+        doc(cfg(any(
+            all(windows, feature = "winauth"),
+            all(unix, feature = "integrated-auth-gssapi")
+        )))
     )]
     Integrated,
     #[doc(hidden)]
@@ -77,8 +84,8 @@ impl AuthMethod {
     }
 
     /// Construct a new Windows authentication configuration.
-    #[cfg(any(windows, doc))]
-    #[cfg_attr(feature = "docs", doc(cfg(windows)))]
+    #[cfg(any(all(windows, feature = "winauth"), doc))]
+    #[cfg_attr(feature = "docs", doc(cfg(all(windows, feature = "winauth"))))]
     pub fn windows(user: impl AsRef<str>, password: impl ToString) -> Self {
         let (domain, user) = match user.as_ref().find('\\') {
             Some(idx) => (Some(&user.as_ref()[..idx]), &user.as_ref()[idx + 1..]),

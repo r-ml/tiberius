@@ -17,7 +17,7 @@ use crate::{
 use async_native_tls::TlsConnector;
 use asynchronous_codec::Framed;
 use bytes::BytesMut;
-#[cfg(any(windows, feature = "integrated-auth-gssapi"))]
+#[cfg(any(all(windows, feature = "winauth"), feature = "integrated-auth-gssapi"))]
 use codec::TokenSspi;
 use futures::{ready, AsyncRead, AsyncWrite, SinkExt, Stream, TryStream, TryStreamExt};
 #[cfg(all(unix, feature = "integrated-auth-gssapi"))]
@@ -35,7 +35,7 @@ use std::ops::Deref;
 use std::{cmp, fmt::Debug, io, pin::Pin, task};
 use task::Poll;
 use tracing::{event, Level};
-#[cfg(windows)]
+#[cfg(all(windows, feature = "winauth"))]
 use winauth::{windows::NtlmSspiBuilder, NextBytes};
 
 /// A `Connection` is an abstraction between the [`Client`] and the server. It
@@ -113,7 +113,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         TokenStream::new(self).flush_done().await
     }
 
-    #[cfg(any(windows, feature = "integrated-auth-gssapi"))]
+    #[cfg(any(all(windows, feature = "winauth"), feature = "integrated-auth-gssapi"))]
     /// Flush the incoming token stream until receiving `SSPI` token.
     async fn flush_sspi(&mut self) -> crate::Result<TokenSspi> {
         TokenStream::new(self).flush_sspi().await
@@ -256,7 +256,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         }
 
         match auth {
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "winauth"))]
             AuthMethod::Integrated => {
                 let mut client = NtlmSspiBuilder::new()
                     .target_spn(self.context.spn())
@@ -325,7 +325,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
                 self.send(header, next_token).await?;
             }
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "winauth"))]
             AuthMethod::Windows(auth) => {
                 let spn = self.context.spn().to_string();
                 let builder = winauth::NtlmV2ClientBuilder::new().target_spn(spn);
