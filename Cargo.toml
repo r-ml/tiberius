@@ -71,7 +71,7 @@ optional = true
 features = ["net", "time"]
 
 [dependencies.tokio-util]
-version = "0.6"
+version = "0.7"
 features = ["compat"]
 optional = true
 
