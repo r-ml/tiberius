@@ -23,9 +23,9 @@ mod xml;
 
 use super::{Encode, FixedLenType, TypeInfo, VarLenType};
 #[cfg(feature = "tds73")]
-use crate::tds::{Date, DateTime2, DateTimeOffset, Time};
+use crate::tds::time::{Date, DateTime2, DateTimeOffset, Time};
 use crate::{
-    tds::{xml::XmlData, DateTime, Numeric, SmallDateTime},
+    tds::{time::DateTime, time::SmallDateTime, xml::XmlData, Numeric},
     SqlReadBytes,
 };
 use bytes::{BufMut, BytesMut};
@@ -34,7 +34,7 @@ use uuid::Uuid;
 
 const MAX_NVARCHAR_SIZE: usize = 1 << 30;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 /// A container of a value that can be represented as a TDS value.
 pub enum ColumnData<'a> {
     /// 8-bit integer, unsigned.
