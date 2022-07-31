@@ -1,5 +1,37 @@
 # Changes
 
+## Version 0.10.0
+
+- BREAKING: uuid crate upgraded to 1.0 major and has to be of the same
+  major in other crates using Tiberius.
+
+## Version 0.9.5
+
+- Add fractional seconds precision for datetime2 (#235)
+
+## Version 0.9.4
+
+- Fix SQL Browser response parsing error (#229)
+- Bulk uploads (#227)
+
+## Version 0.9.3
+
+- Enable SSL if using vendored-openssl feature (#225)
+
+## Version 0.9.2
+
+- Allow statically linking against OpenSSL (#222)
+
+## Version 0.9.1
+
+- Support AAD token authentication (#215)
+
+## Version 0.9.0
+
+- (BREAKING) support rustls, switch between native-tls and rustls.
+  the feature flag vendored-openssl is gone. instead if needing vendored TLS,
+  use feature flag rustls
+
 ## Version 0.8.0
 
 - (BREAKING) fix: correctly decode null integers (#209)

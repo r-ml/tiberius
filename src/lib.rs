@@ -162,6 +162,13 @@
 //! - If enabling the `integrated-auth-gssapi` feature, it is possible to login
 //! with the currently active Kerberos credentials.
 //!
+//! ## AAD(Azure Active Directory) Authentication
+//!
+//! Tiberius supports AAD authentication by taking an AAD token. Suggest using
+//! [azure_identity](https://crates.io/crates/azure_identity) crate to retrieve
+//! the token, and config tiberius with token. There is an example in examples
+//! folder on how to setup this.
+//!
 //! # TLS
 //!
 //! When compiled using the default features, a TLS encryption will be available
@@ -269,7 +276,12 @@ pub use query::Query;
 pub use result::*;
 pub use row::{Column, ColumnType, Row};
 pub use sql_browser::SqlBrowser;
-pub use tds::{codec::ColumnData, numeric, stream::QueryStream, time, xml, EncryptionLevel};
+pub use tds::{
+    codec::{BulkLoadRequest, ColumnData, ColumnFlag, IntoRow, TokenRow, TypeLength},
+    numeric,
+    stream::QueryStream,
+    time, xml, EncryptionLevel,
+};
 pub use to_sql::{IntoSql, ToSql};
 pub use uuid::Uuid;
 

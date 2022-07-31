@@ -48,7 +48,18 @@ impl Default for Config {
             database: None,
             instance_name: None,
             application_name: None,
+            #[cfg(any(
+                feature = "rustls",
+                feature = "native-tls",
+                feature = "vendored-openssl"
+            ))]
             encryption: EncryptionLevel::Required,
+            #[cfg(not(any(
+                feature = "rustls",
+                feature = "native-tls",
+                feature = "vendored-openssl"
+            )))]
+            encryption: EncryptionLevel::NotSupported,
             trust: TrustConfig::Default,
             auth: AuthMethod::None,
         }
@@ -323,6 +334,11 @@ pub(crate) trait ConfigString {
             .map(|ca| ca.to_string())
     }
 
+    #[cfg(any(
+        feature = "rustls",
+        feature = "native-tls",
+        feature = "vendored-openssl"
+    ))]
     fn encrypt(&self) -> crate::Result<EncryptionLevel> {
         self.dict()
             .get("encrypt")
@@ -333,6 +349,15 @@ pub(crate) trait ConfigString {
                 Err(e) => Err(e),
             })
             .unwrap_or(Ok(EncryptionLevel::Off))
+    }
+
+    #[cfg(not(any(
+        feature = "rustls",
+        feature = "native-tls",
+        feature = "vendored-openssl"
+    )))]
+    fn encrypt(&self) -> crate::Result<EncryptionLevel> {
+        Ok(EncryptionLevel::NotSupported)
     }
 
     fn parse_bool<T: AsRef<str>>(v: T) -> crate::Result<bool> {

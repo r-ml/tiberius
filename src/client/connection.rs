@@ -1,10 +1,11 @@
-use crate::error::IoErrorKind;
+#[cfg(any(
+    feature = "rustls",
+    feature = "native-tls",
+    feature = "vendored-openssl"
+))]
+use crate::client::{tls::TlsPreloginWrapper, tls_stream::create_tls_stream};
 use crate::{
-    client::{
-        tls::{MaybeTlsStream, TlsPreloginWrapper},
-        AuthMethod, Config, TrustConfig,
-    },
-    error::Error,
+    client::{tls::MaybeTlsStream, AuthMethod, Config},
     tds::{
         codec::{
             self, Encode, LoginMessage, Packet, PacketCodec, PacketHeader, PacketStatus,
@@ -15,8 +16,6 @@ use crate::{
     },
     EncryptionLevel, SqlReadBytes,
 };
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-use async_native_tls::{Certificate, TlsConnector};
 use asynchronous_codec::Framed;
 use bytes::BytesMut;
 #[cfg(any(windows, feature = "integrated-auth-gssapi"))]
@@ -29,12 +28,10 @@ use libgssapi::{
     name::Name,
     oid::{OidSet, GSS_MECH_KRB5, GSS_NT_KRB5_PRINCIPAL},
 };
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-use opentls::{async_io::TlsConnector, Certificate};
 use pretty_hex::*;
 #[cfg(all(unix, feature = "integrated-auth-gssapi"))]
 use std::ops::Deref;
-use std::{cmp, fmt::Debug, fs, io, pin::Pin, task};
+use std::{cmp, fmt::Debug, io, pin::Pin, task};
 use task::Poll;
 use tracing::{event, Level};
 #[cfg(all(windows, feature = "winauth"))]
@@ -88,7 +85,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             buf: BytesMut::new(),
         };
 
-        let prelogin = connection.prelogin(config.encryption).await?;
+        let fed_auth_required = if let AuthMethod::AADToken(_) = config.auth {
+            true
+        } else {
+            false
+        };
+
+        let prelogin = connection
+            .prelogin(config.encryption, fed_auth_required)
+            .await?;
+
         let encryption = prelogin.negotiated_encryption(config.encryption);
 
         let connection = connection.tls_handshake(&config, encryption).await?;
@@ -100,6 +106,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 config.database,
                 config.host,
                 config.application_name,
+                prelogin,
             )
             .await?;
 
@@ -119,6 +126,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         TokenStream::new(self).flush_sspi().await
     }
 
+    #[cfg(any(
+        feature = "rustls",
+        feature = "native-tls",
+        feature = "vendored-openssl"
+    ))]
     fn post_login_encryption(mut self, encryption: EncryptionLevel) -> Self {
         if let EncryptionLevel::Off = encryption {
             event!(
@@ -131,6 +143,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             self.transport = Framed::new(MaybeTlsStream::Raw(tcp), PacketCodec);
         }
 
+        self
+    }
+
+    #[cfg(not(any(
+        feature = "rustls",
+        feature = "native-tls",
+        feature = "vendored-openssl"
+    )))]
+    fn post_login_encryption(self, _: EncryptionLevel) -> Self {
         self
     }
 
@@ -167,13 +188,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 split_payload.len() + HEADER_BYTES,
             );
 
-            let packet = Packet::new(header, split_payload);
-            self.transport.send(packet).await?;
+            self.write_to_wire(header, split_payload).await?;
         }
 
-        self.transport.flush().await?;
+        self.flush_sink().await?;
 
         Ok(())
+    }
+
+    /// Sends a packet of data to the database.
+    ///
+    /// # Warning
+    ///
+    /// Please be sure the packet size doesn't exceed the largest allowed size
+    /// dictaded by the server.
+    pub(crate) async fn write_to_wire(
+        &mut self,
+        header: PacketHeader,
+        data: BytesMut,
+    ) -> crate::Result<()> {
+        self.flushed = false;
+
+        let packet = Packet::new(header, data);
+        self.transport.send(packet).await?;
+
+        Ok(())
+    }
+
+    /// Sends all pending packages to the wire.
+    pub(crate) async fn flush_sink(&mut self) -> crate::Result<()> {
+        self.transport.flush().await
     }
 
     /// Cleans the packet stream from previous use. It is important to use the
@@ -220,14 +264,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// encryption is needed. In this scenario, where PRELOGIN message is
     /// transporting the TLS handshake payload, the packet data is simply the
     /// raw bytes of the TLS handshake payload.
-    async fn prelogin(&mut self, encryption: EncryptionLevel) -> crate::Result<PreloginMessage> {
+    async fn prelogin(
+        &mut self,
+        encryption: EncryptionLevel,
+        fed_auth_required: bool,
+    ) -> crate::Result<PreloginMessage> {
         let mut msg = PreloginMessage::new();
         msg.encryption = encryption;
+        msg.fed_auth_required = fed_auth_required;
 
         let id = self.context.next_packet_id();
         self.send(PacketHeader::pre_login(id), msg).await?;
 
-        Ok(codec::collect_from(self).await?)
+        let response: PreloginMessage = codec::collect_from(self).await?;
+        // threadid (should be empty when sent from server to client)
+        debug_assert_eq!(response.thread_id, 0);
+        Ok(response)
     }
 
     /// Defines the login record rules with SQL Server. Authentication with
@@ -239,6 +291,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         db: Option<String>,
         server_name: Option<String>,
         application_name: Option<String>,
+        prelogin: PreloginMessage,
     ) -> crate::Result<Self> {
         let mut login_message = LoginMessage::new();
 
@@ -365,12 +418,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 self.send(PacketHeader::login(id), login_message).await?;
                 self = self.post_login_encryption(encryption);
             }
+            AuthMethod::AADToken(token) => {
+                login_message.aad_token(token, prelogin.fed_auth_required, prelogin.nonce);
+                let id = self.context.next_packet_id();
+                self.send(PacketHeader::login(id), login_message).await?;
+                self = self.post_login_encryption(encryption);
+            }
         }
 
         Ok(self)
     }
 
     /// Implements the TLS handshake with the SQL Server.
+    #[cfg(any(
+        feature = "rustls",
+        feature = "native-tls",
+        feature = "vendored-openssl"
+    ))]
     async fn tls_handshake(
         self,
         config: &Config,
@@ -379,58 +443,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         if encryption != EncryptionLevel::NotSupported {
             event!(Level::INFO, "Performing a TLS handshake");
 
-            let mut builder = TlsConnector::new();
-
-            match &config.trust {
-                TrustConfig::CaCertificateLocation(path) => {
-                    if let Ok(buf) = fs::read(path) {
-                        let cert = match path.extension() {
-                            Some(ext)
-                                if ext.to_ascii_lowercase() == "pem"
-                                    || ext.to_ascii_lowercase() == "crt" =>
-                            {
-                                Some(Certificate::from_pem(&buf)?)
-                            }
-                            Some(ext) if ext.to_ascii_lowercase() == "der" => {
-                                Some(Certificate::from_der(&buf)?)
-                            }
-                            Some(_) | None => return Err(Error::Io {
-                                kind: IoErrorKind::InvalidInput,
-                                message: "Provided CA certificate with unsupported file-extension! Supported types are pem, crt and der.".to_string()}),
-                        };
-                        if let Some(c) = cert {
-                            builder = builder.add_root_certificate(c);
-                        }
-                    } else {
-                        return Err(Error::Io {
-                            kind: IoErrorKind::InvalidData,
-                            message: "Could not read provided CA certificate!".to_string(),
-                        });
-                    }
-                }
-                TrustConfig::TrustAll => {
-                    event!(
-                        Level::WARN,
-                        "Trusting the server certificate without validation."
-                    );
-
-                    builder = builder.danger_accept_invalid_certs(true);
-                    builder = builder.danger_accept_invalid_hostnames(true);
-                    builder = builder.use_sni(false);
-                }
-                TrustConfig::Default => {
-                    event!(Level::INFO, "Using default trust configuration.");
-                }
-            }
-
             let Self {
                 transport, context, ..
             } = self;
             let mut stream = match transport.release().0 {
                 MaybeTlsStream::Raw(tcp) => {
-                    builder
-                        .connect(config.get_host(), TlsPreloginWrapper::new(tcp))
-                        .await?
+                    create_tls_stream(config, TlsPreloginWrapper::new(tcp)).await?
                 }
                 _ => unreachable!(),
             };
@@ -454,6 +472,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
             Ok(self)
         }
+    }
+
+    /// Implements the TLS handshake with the SQL Server.
+    #[cfg(not(any(
+        feature = "rustls",
+        feature = "native-tls",
+        feature = "vendored-openssl"
+    )))]
+    async fn tls_handshake(self, _: &Config, _: EncryptionLevel) -> crate::Result<Self> {
+        event!(
+            Level::WARN,
+            "TLS encryption is not enabled. All traffic including the login credentials are not encrypted."
+        );
+
+        Ok(self)
     }
 }
 

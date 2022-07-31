@@ -60,6 +60,9 @@ pub enum Error {
         /// The requested port.
         port: u16,
     },
+    #[error("BULK UPLOAD input failure: {0}")]
+    /// Invalid input in Bulk Upload
+    BulkInput(Cow<'static, str>),
 }
 
 impl From<uuid::Error> for Error {
@@ -68,24 +71,16 @@ impl From<uuid::Error> for Error {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-#[cfg_attr(
-    feature = "docs",
-    doc(cfg(any(target_os = "macos", target_os = "ios")))
-)]
-impl From<opentls::Error> for Error {
-    fn from(v: opentls::Error) -> Self {
+#[cfg(feature = "native-tls")]
+impl From<async_native_tls::Error> for Error {
+    fn from(v: async_native_tls::Error) -> Self {
         Error::Tls(format!("{}", v))
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-#[cfg_attr(
-    feature = "docs",
-    doc(cfg(not(any(target_os = "macos", target_os = "ios"))))
-)]
-impl From<async_native_tls::Error> for Error {
-    fn from(v: async_native_tls::Error) -> Self {
+#[cfg(feature = "vendored-openssl")]
+impl From<opentls::Error> for Error {
+    fn from(v: opentls::Error) -> Self {
         Error::Tls(format!("{}", v))
     }
 }
